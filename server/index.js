@@ -25,11 +25,18 @@ app.use('/api/send', sendRouter)
 app.use('/api/stats', statsRouter)
 
 
-if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.join(__dirname, '..', 'client', 'dist')))
+const clientDistPath = path.join(__dirname, '..', 'client', 'dist');
+const fs = require('fs');
+
+if (fs.existsSync(clientDistPath)) {
+    app.use(express.static(clientDistPath));
     app.use((req, res) => {
-        res.sendFile(path.join(__dirname, '../client/dist/index.html'))
-    })
+        res.sendFile(path.join(clientDistPath, 'index.html'));
+    });
+} else {
+    app.get('/', (req, res) => {
+        res.send('Automail API is running. (Client build not found)');
+    });
 }
 if (process.env.NODE_ENV !== 'production') {
     app.listen(PORT, () => {
