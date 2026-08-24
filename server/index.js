@@ -31,9 +31,13 @@ if (process.env.NODE_ENV === 'production') {
         res.sendFile(path.join(__dirname, '../client/dist/index.html'))
     })
 }
-app.listen(PORT, () => {
-    console.log(`\n🚀 Automail server running on http://localhost:${PORT}`);
-    console.log(`📧 Sender: ${process.env.SENDER_EMAIL || 'NOT SET'}`);
-    console.log(`⚡ Rate limit: ${process.env.RATE_LIMIT_PER_MINUTE || 5}/min`);
-    console.log(`📊 Daily limit: ${process.env.DAILY_LIMIT || 200}\n`);
-});
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(PORT, () => {
+        console.log(`\n🚀 Automail server running on http://localhost:${PORT}`);
+        console.log(`📧 Sender: ${process.env.SENDER_EMAIL || 'NOT SET'}`);
+        console.log(`⚡ Rate limit: ${process.env.RATE_LIMIT_PER_MINUTE || 5}/min`);
+        console.log(`📊 Daily limit: ${process.env.DAILY_LIMIT || 200}\n`);
+    });
+}
+
+module.exports = app;
