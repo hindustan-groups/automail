@@ -137,7 +137,7 @@ function Contacts({ addToast }) {
             <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
             <span>Import CSV</span>
           </button>
-          <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleCSVUpload} />
+          <input ref={fileInputRef} type="file" accept=".csv, appllication/vnd/.openxmlformats-oficedocument.spreadsheetml.sheet,application/vnd.ms-excel" className="hidden" onChange={handleCSVUpload} />
 
           {total > 0 && (
             <button

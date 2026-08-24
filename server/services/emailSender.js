@@ -28,9 +28,9 @@ function createTransporter() {
 /**
  * Send a single email via Hostinger SMTP with fallback
  */
-async function sendOneEmail(to, subject, htmlBody, textBody) {
-  const senderEmail = process.env.SENDER_EMAIL || process.env.SMTP_USER;
-  const senderName = process.env.SENDER_NAME || 'Automail';
+async function sendOneEmail(to, subject, htmlBody, textBody, customSenderEmail, customSenderName) {
+  const senderEmail = customSenderEmail || process.env.SENDER_EMAIL || process.env.SMTP_USER;
+  const senderName = customSenderName || process.env.SENDER_NAME || 'Automail';
 
   // Try SMTP Transport first via nodemailer
   try {
@@ -82,31 +82,51 @@ async function sendOneEmail(to, subject, htmlBody, textBody) {
 /**
  * Get today's send count
  */
-function getTodaySentCount() {
+async function getTodaySentCount() {
   const today = new Date().toISOString().split('T')[0];
-  const row = db.prepare('SELECT total_sent FROM daily_stats WHERE date = ?').get(today);
-  return row ? row.total_sent : 0;
+  try {
+    const result = await db.execute({
+      sql: 'SELECT total_sent FROM daily_stats WHERE date = ?',
+      args: [today]
+    });
+    return result.rows.length > 0 ? Number(result.rows[0].total_sent) : 0;
+  } catch (err) {
+    console.error('Failed to get today sent count:', err);
+    return 0;
+  }
 }
 
 /**
  * Increment today's stats
  */
-function incrementDailyStats(success) {
+async function incrementDailyStats(success) {
   const today = new Date().toISOString().split('T')[0];
-  const existing = db.prepare('SELECT * FROM daily_stats WHERE date = ?').get(today);
-
-  if (existing) {
-    if (success) {
-      db.prepare('UPDATE daily_stats SET total_sent = total_sent + 1 WHERE date = ?').run(today);
+  try {
+    const existingResult = await db.execute({
+      sql: 'SELECT * FROM daily_stats WHERE date = ?',
+      args: [today]
+    });
+    
+    if (existingResult.rows.length > 0) {
+      if (success) {
+        await db.execute({
+          sql: 'UPDATE daily_stats SET total_sent = total_sent + 1 WHERE date = ?',
+          args: [today]
+        });
+      } else {
+        await db.execute({
+          sql: 'UPDATE daily_stats SET total_failed = total_failed + 1 WHERE date = ?',
+          args: [today]
+        });
+      }
     } else {
-      db.prepare('UPDATE daily_stats SET total_failed = total_failed + 1 WHERE date = ?').run(today);
+      await db.execute({
+        sql: 'INSERT INTO daily_stats (date, total_sent, total_failed) VALUES (?, ?, ?)',
+        args: [today, success ? 1 : 0, success ? 0 : 1]
+      });
     }
-  } else {
-    db.prepare('INSERT INTO daily_stats (date, total_sent, total_failed) VALUES (?, ?, ?)').run(
-      today,
-      success ? 1 : 0,
-      success ? 0 : 1
-    );
+  } catch (err) {
+    console.error('Failed to increment daily stats:', err);
   }
 }
 
@@ -135,80 +155,118 @@ async function processCampaignQueue(campaignId) {
   const dailyLimit = parseInt(process.env.DAILY_LIMIT) || 200;
   const delayMs = Math.ceil(60000 / rateLimit); // ms between each email
 
-  const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(campaignId);
-  if (!campaign) {
-    isSending = false;
-    throw new Error('Campaign not found');
-  }
-
-  // Update campaign status
-  db.prepare('UPDATE campaigns SET status = ? WHERE id = ?').run('sending', campaignId);
-
-  const queuedEmails = db.prepare(
-    'SELECT * FROM send_log WHERE campaign_id = ? AND status = ?'
-  ).all(campaignId, 'queued');
-
-  console.log(`📧 Starting campaign "${campaign.name}" — ${queuedEmails.length} emails to send`);
-
-  let sentCount = 0;
-  let failedCount = 0;
-
-  for (const entry of queuedEmails) {
-    if (shouldStop) {
-      console.log('⏹️ Campaign sending stopped by user');
-      break;
+  try {
+    const campaignResult = await db.execute({
+      sql: 'SELECT * FROM campaigns WHERE id = ?',
+      args: [campaignId]
+    });
+    
+    if (campaignResult.rows.length === 0) {
+      isSending = false;
+      throw new Error('Campaign not found');
     }
+    
+    const campaign = campaignResult.rows[0];
 
-    // Check daily limit
-    if (getTodaySentCount() >= dailyLimit) {
-      console.log(`⚠️ Daily limit of ${dailyLimit} reached. Pausing.`);
-      db.prepare('UPDATE campaigns SET status = ? WHERE id = ?').run('paused', campaignId);
-      break;
-    }
+    // Update campaign status
+    await db.execute({
+      sql: 'UPDATE campaigns SET status = ? WHERE id = ?',
+      args: ['sending', campaignId]
+    });
 
-    try {
-      const personalizedHtml = personalizeBody(campaign.html_body, entry);
-      const personalizedText = personalizeBody(campaign.text_body, entry);
+    const queuedEmailsResult = await db.execute({
+      sql: 'SELECT * FROM send_log WHERE campaign_id = ? AND status = ?',
+      args: [campaignId, 'queued']
+    });
+    
+    const queuedEmails = queuedEmailsResult.rows;
 
-      await sendOneEmail(entry.contact_email, campaign.subject, personalizedHtml, personalizedText);
+    console.log(`📧 Starting campaign "${campaign.name}" — ${queuedEmails.length} emails to send`);
 
-      // Mark as sent
-      db.prepare('UPDATE send_log SET status = ?, sent_at = CURRENT_TIMESTAMP WHERE id = ?').run('sent', entry.id);
-      incrementDailyStats(true);
-      sentCount++;
+    let sentCount = 0;
+    let failedCount = 0;
 
-      console.log(`  ✅ Sent to ${entry.contact_email} (${sentCount}/${queuedEmails.length})`);
-    } catch (err) {
-      // Mark as failed
-      db.prepare('UPDATE send_log SET status = ?, error = ? WHERE id = ?').run('failed', err.message, entry.id);
-      incrementDailyStats(false);
-      failedCount++;
-
-      console.log(`  ❌ Failed: ${entry.contact_email} — ${err.message}`);
-
-      // If rate limited, wait longer
-      if (err.message.includes('429')) {
-        console.log('  ⏳ Rate limited! Waiting 60 seconds...');
-        await sleep(60000);
+    for (const entry of queuedEmails) {
+      if (shouldStop) {
+        console.log('⏹️ Campaign sending stopped by user');
+        break;
       }
+
+      // Check daily limit
+      const todaySentCount = await getTodaySentCount();
+      if (todaySentCount >= dailyLimit) {
+        console.log(`⚠️ Daily limit of ${dailyLimit} reached. Pausing.`);
+        await db.execute({
+          sql: 'UPDATE campaigns SET status = ? WHERE id = ?',
+          args: ['paused', campaignId]
+        });
+        break;
+      }
+
+      try {
+        const personalizedHtml = personalizeBody(campaign.html_body, entry);
+        const personalizedText = personalizeBody(campaign.text_body, entry);
+
+        await sendOneEmail(
+          entry.contact_email, 
+          campaign.subject, 
+          personalizedHtml, 
+          personalizedText,
+          campaign.sender_email,
+          campaign.sender_name
+        );
+
+        // Mark as sent
+        await db.execute({
+          sql: 'UPDATE send_log SET status = ?, sent_at = CURRENT_TIMESTAMP WHERE id = ?',
+          args: ['sent', entry.id]
+        });
+        await incrementDailyStats(true);
+        sentCount++;
+
+        console.log(`  ✅ Sent to ${entry.contact_email} (${sentCount}/${queuedEmails.length})`);
+      } catch (err) {
+        // Mark as failed
+        await db.execute({
+          sql: 'UPDATE send_log SET status = ?, error = ? WHERE id = ?',
+          args: ['failed', err.message, entry.id]
+        });
+        await incrementDailyStats(false);
+        failedCount++;
+
+        console.log(`  ❌ Failed: ${entry.contact_email} — ${err.message}`);
+
+        // If rate limited, wait longer
+        if (err.message.includes('429')) {
+          console.log('  ⏳ Rate limited! Waiting 60 seconds...');
+          await sleep(60000);
+        }
+      }
+
+      // Update campaign counts
+      await db.execute({
+        sql: 'UPDATE campaigns SET sent_count = ?, failed_count = ? WHERE id = ?',
+        args: [sentCount, failedCount, campaignId]
+      });
+
+      // Wait between sends
+      await sleep(delayMs);
     }
 
-    // Update campaign counts
-    db.prepare('UPDATE campaigns SET sent_count = ?, failed_count = ? WHERE id = ?').run(
-      sentCount, failedCount, campaignId
-    );
+    // Final status
+    const finalStatus = shouldStop ? 'paused' : 'completed';
+    await db.execute({
+      sql: 'UPDATE campaigns SET status = ?, sent_at = CURRENT_TIMESTAMP WHERE id = ?',
+      args: [finalStatus, campaignId]
+    });
 
-    // Wait between sends
-    await sleep(delayMs);
+    console.log(`📊 Campaign "${campaign.name}" ${finalStatus}: ${sentCount} sent, ${failedCount} failed`);
+
+  } catch (err) {
+    console.error('Campaign processor error:', err);
+  } finally {
+    isSending = false;
   }
-
-  // Final status
-  const finalStatus = shouldStop ? 'paused' : 'completed';
-  db.prepare('UPDATE campaigns SET status = ?, sent_at = CURRENT_TIMESTAMP WHERE id = ?').run(finalStatus, campaignId);
-
-  console.log(`📊 Campaign "${campaign.name}" ${finalStatus}: ${sentCount} sent, ${failedCount} failed`);
-
-  isSending = false;
 }
 
 /**

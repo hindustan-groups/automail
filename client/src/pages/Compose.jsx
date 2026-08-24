@@ -13,6 +13,8 @@ import {
 function Compose({ addToast }) {
   const [name, setName] = useState('')
   const [subject, setSubject] = useState('')
+  const [senderName, setSenderName] = useState('')
+  const [senderEmail, setSenderEmail] = useState('')
   const [htmlBody, setHtmlBody] = useState('')
   const [saving, setSaving] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
@@ -32,6 +34,8 @@ function Compose({ addToast }) {
         body: JSON.stringify({
           name,
           subject,
+          sender_name: senderName,
+          sender_email: senderEmail,
           html_body: htmlBody,
           text_body: htmlBody.replace(/<[^>]*>/g, ''),
         }),
@@ -100,6 +104,30 @@ function Compose({ addToast }) {
               className="w-full px-4 py-3 bg-gray-50 dark:bg-gray-900/80 border border-gray-200 dark:border-gray-800 rounded-xl text-gray-900 dark:text-white text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all placeholder:text-gray-400 dark:placeholder:text-gray-600"
             />
           </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+              Custom Sender Name (Optional)
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. Sales Team"
+              value={senderName}
+              onChange={(e) => setSenderName(e.target.value)}
+              className="w-full px-4 py-3 bg-gray-50 dark:bg-gray-900/80 border border-gray-200 dark:border-gray-800 rounded-xl text-gray-900 dark:text-white text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all placeholder:text-gray-400 dark:placeholder:text-gray-600"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+              Custom Sender Email (Optional)
+            </label>
+            <input
+              type="email"
+              placeholder="e.g. sales@hindustanprojects.in"
+              value={senderEmail}
+              onChange={(e) => setSenderEmail(e.target.value)}
+              className="w-full px-4 py-3 bg-gray-50 dark:bg-gray-900/80 border border-gray-200 dark:border-gray-800 rounded-xl text-gray-900 dark:text-white text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all placeholder:text-gray-400 dark:placeholder:text-gray-600"
+            />
+          </div>
         </div>
 
         {/* Dynamic Variable Helper Toolbar */}
@@ -163,7 +191,7 @@ function Compose({ addToast }) {
           {showPreview ? (
             <div className="bg-white text-gray-900 rounded-xl p-8 min-h-[300px] border border-gray-300 shadow-inner overflow-y-auto max-h-[500px]">
               <div className="pb-4 mb-4 border-b border-gray-200 text-xs text-gray-500 font-sans">
-                <p><strong>From:</strong> Hindustan Projects &lt;info@hindustanprojects.in&gt;</p>
+                <p><strong>From:</strong> {senderName || 'Hindustan Projects'} &lt;{senderEmail || 'info@hindustanprojects.in'}&gt;</p>
                 <p><strong>Subject:</strong> {subject || '(No subject provided)'}</p>
               </div>
               <div 

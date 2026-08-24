@@ -2,62 +2,100 @@ const express = require('express');
 const db = require('../db');
 const router = express.Router();
 
-router.get('/', (req, res) => {
-    const campaigns = db.prepare('SELECT * FROM campaigns ORDER BY created_at DESC').all();
-    res.json(campaigns);
+router.get('/', async (req, res) => {
+    try {
+        const result = await db.execute('SELECT * FROM campaigns ORDER BY created_at DESC');
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-router.get('/:id', (req, res) => {
-    const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(req.params.id)
-    if (!campaign) {
-        return res.status(404).json({ error: 'Campaign not found' });
+router.get('/:id', async (req, res) => {
+    try {
+        const result = await db.execute({
+            sql: 'SELECT * FROM campaigns WHERE id = ?',
+            args: [req.params.id]
+        });
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Campaign not found' });
+        }
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-    res.json(campaign);
-
-})
-
+});
 
 // POST /api/campaigns — Create new campaign
-router.post('/', (req, res) => {
-    const { name, subject, html_body, text_body } = req.body;
+router.post('/', async (req, res) => {
+    const { name, subject, html_body, text_body, sender_name, sender_email } = req.body;
     if (!name || !subject) {
         return res.status(400).json({ error: 'Name and subject are required' });
     }
-    const result = db.prepare(
-        'INSERT INTO campaigns (name, subject, html_body, text_body) VALUES (?, ?, ?, ?)'
-    ).run(name, subject, html_body || '', text_body || '');
-    res.status(201).json({ id: result.lastInsertRowid, message: 'Campaign created' });
+    try {
+        const result = await db.execute({
+            sql: 'INSERT INTO campaigns (name, subject, html_body, text_body, sender_name, sender_email) VALUES (?, ?, ?, ?, ?, ?)',
+            args: [name, subject, html_body || '', text_body || '', sender_name || null, sender_email || null]
+        });
+        res.status(201).json({ id: Number(result.lastInsertRowid), message: 'Campaign created' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
+
 // PUT /api/campaigns/:id — Update campaign
-router.put('/:id', (req, res) => {
-    const { name, subject, html_body, text_body } = req.body;
-    const existing = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(req.params.id);
-    if (!existing) {
-        return res.status(404).json({ error: 'Campaign not found' });
+router.put('/:id', async (req, res) => {
+    const { name, subject, html_body, text_body, sender_name, sender_email } = req.body;
+    try {
+        const existingResult = await db.execute({
+            sql: 'SELECT * FROM campaigns WHERE id = ?',
+            args: [req.params.id]
+        });
+        if (existingResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Campaign not found' });
+        }
+        const existing = existingResult.rows[0];
+        if (existing.status === 'sending') {
+            return res.status(400).json({ error: 'Cannot edit a campaign that is currently sending' });
+        }
+        await db.execute({
+            sql: 'UPDATE campaigns SET name = ?, subject = ?, html_body = ?, text_body = ?, sender_name = ?, sender_email = ?, status = ? WHERE id = ?',
+            args: [
+                name || existing.name,
+                subject || existing.subject,
+                html_body !== undefined ? html_body : existing.html_body,
+                text_body !== undefined ? text_body : existing.text_body,
+                sender_name !== undefined ? sender_name : existing.sender_name,
+                sender_email !== undefined ? sender_email : existing.sender_email,
+                'draft',
+                req.params.id
+            ]
+        });
+        res.json({ message: 'Campaign updated' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-    if (existing.status === 'sending') {
-        return res.status(400).json({ error: 'Cannot edit a campaign that is currently sending' });
-    }
-    db.prepare(
-        'UPDATE campaigns SET name = ?, subject = ?, html_body = ?, text_body = ?, status = ? WHERE id = ?'
-    ).run(
-        name || existing.name,
-        subject || existing.subject,
-        html_body !== undefined ? html_body : existing.html_body,
-        text_body !== undefined ? text_body : existing.text_body,
-        'draft',
-        req.params.id
-    );
-    res.json({ message: 'Campaign updated' });
 });
+
 // DELETE /api/campaigns/:id — Delete campaign
-router.delete('/:id', (req, res) => {
-    // Delete related send logs first
-    db.prepare('DELETE FROM send_log WHERE campaign_id = ?').run(req.params.id);
-    const result = db.prepare('DELETE FROM campaigns WHERE id = ?').run(req.params.id);
-    if (result.changes === 0) {
-        return res.status(404).json({ error: 'Campaign not found' });
+router.delete('/:id', async (req, res) => {
+    try {
+        // Delete related send logs first
+        await db.execute({
+            sql: 'DELETE FROM send_log WHERE campaign_id = ?',
+            args: [req.params.id]
+        });
+        const result = await db.execute({
+            sql: 'DELETE FROM campaigns WHERE id = ?',
+            args: [req.params.id]
+        });
+        if (result.rowsAffected === 0) {
+            return res.status(404).json({ error: 'Campaign not found' });
+        }
+        res.json({ message: 'Campaign deleted' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-    res.json({ message: 'Campaign deleted' });
 });
+
 module.exports = router;

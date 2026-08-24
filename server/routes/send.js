@@ -5,64 +5,85 @@ const { processCampaignQueue, stopSending, getSendingStatus } = require('../serv
 const router = express.Router();
 
 // POST /api/send/:campaignId — Start sending a campaign
-router.post('/:campaignId', (req, res) => {
+router.post('/:campaignId', async (req, res) => {
     const { campaignId } = req.params;
-    const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(campaignId);
-
-    if (!campaign) {
-        return res.status(404).json({ error: 'Campaign not found' });
-    }
-
-    if (campaign.status === 'sending') {
-        return res.status(400).json({ error: 'Campaign is already being sent' });
-    }
-
-    const { isSending } = getSendingStatus();
-    if (isSending) {
-        return res.status(400).json({ error: 'Another campaign is currently being sent. Please wait.' });
-    }
-
-    // Get all contacts
-    const {contactIds} = req.body;
-    let contacts = []
-    if(contactIds && Array.isArray(contactIds) && contactIds.length >0 ){
-        const placeholders = contactIds.map(()=> '?').join(',')
-        contacts = db.prepare(`SELECT * FROM contacts WHERE id IN (${placeholders})`).all(...contactIds);
-    }else{
-        contacts = db.prepare('SELECT * FROM contacts').all();
-    }
-    if (contacts.length === 0) {
-        return res.status(400).json({ error: 'No contacts selected or found to send to.' });
-    }
-    // Clear previous send logs for this campaign (if re-sending)
-    db.prepare('DELETE FROM send_log WHERE campaign_id = ?').run(campaignId);
-
-    // Create send_log entries for each contact
-    const insertStmt = db.prepare(
-        'INSERT INTO send_log (campaign_id, contact_email, contact_name, status) VALUES (?, ?, ?, ?)'
-    );
-
-    const insertAll = db.transaction((contactsList) => {
-        for (const contact of contactsList) {
-            insertStmt.run(campaignId, contact.email, contact.name, 'queued');
+    try {
+        const campaignResult = await db.execute({
+            sql: 'SELECT * FROM campaigns WHERE id = ?',
+            args: [campaignId]
+        });
+        
+        if (campaignResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Campaign not found' });
         }
-    });
+        
+        const campaign = campaignResult.rows[0];
 
-    insertAll(contacts);
+        if (campaign.status === 'sending') {
+            return res.status(400).json({ error: 'Campaign is already being sent' });
+        }
 
-    // Update campaign total
-    db.prepare('UPDATE campaigns SET total_recipients = ?, sent_count = 0, failed_count = 0, status = ? WHERE id = ?')
-        .run(contacts.length, 'queued', campaignId);
+        const { isSending } = getSendingStatus();
+        if (isSending) {
+            return res.status(400).json({ error: 'Another campaign is currently being sent. Please wait.' });
+        }
 
-    // Start sending in background (don't await)
-    processCampaignQueue(parseInt(campaignId)).catch((err) => {
-        console.error('Campaign sending error:', err.message);
-    });
+        // Get all contacts
+        const { contactIds } = req.body;
+        let contacts = [];
+        if (contactIds && Array.isArray(contactIds) && contactIds.length > 0) {
+            const placeholders = contactIds.map(() => '?').join(',');
+            const contactsResult = await db.execute({
+                sql: `SELECT * FROM contacts WHERE id IN (${placeholders})`,
+                args: contactIds
+            });
+            contacts = contactsResult.rows;
+        } else {
+            const contactsResult = await db.execute('SELECT * FROM contacts');
+            contacts = contactsResult.rows;
+        }
+        
+        if (contacts.length === 0) {
+            return res.status(400).json({ error: 'No contacts selected or found to send to.' });
+        }
+        
+        // Clear previous send logs for this campaign (if re-sending)
+        await db.execute({
+            sql: 'DELETE FROM send_log WHERE campaign_id = ?',
+            args: [campaignId]
+        });
 
-    res.json({
-        message: `Campaign "${campaign.name}" queued for sending to ${contacts.length} contacts`,
-        totalRecipients: contacts.length,
-    });
+        // Create send_log entries for each contact
+        const stmts = contacts.map(contact => ({
+            sql: 'INSERT INTO send_log (campaign_id, contact_email, contact_name, status) VALUES (?, ?, ?, ?)',
+            args: [campaignId, contact.email, contact.name, 'queued']
+        }));
+        
+        // Batch insert
+        const chunkSize = 100;
+        for (let i = 0; i < stmts.length; i += chunkSize) {
+            const chunk = stmts.slice(i, i + chunkSize);
+            await db.batch(chunk, "write");
+        }
+
+        // Update campaign total
+        await db.execute({
+            sql: 'UPDATE campaigns SET total_recipients = ?, sent_count = 0, failed_count = 0, status = ? WHERE id = ?',
+            args: [contacts.length, 'queued', campaignId]
+        });
+
+        // Start sending in background (don't await)
+        processCampaignQueue(parseInt(campaignId)).catch((err) => {
+            console.error('Campaign sending error:', err.message);
+        });
+
+        res.json({
+            message: `Campaign "${campaign.name}" queued for sending to ${contacts.length} contacts`,
+            totalRecipients: contacts.length,
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // POST /api/send/stop — Stop sending
