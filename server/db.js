@@ -4,15 +4,21 @@ const path = require('path');
 const fs = require('fs');
 
 // Initialize libSQL client
-// If TURSO_DATABASE_URL is not provided, fallback to local sqlite file
-const url = process.env.TURSO_DATABASE_URL || `file:${path.join(__dirname, '..', 'data', 'automail.db')}`;
+// If TURSO_DATABASE_URL is not provided, fallback to local sqlite file (or memory if on Vercel)
+const isVercel = process.env.VERCEL === '1';
+const url = process.env.TURSO_DATABASE_URL || (isVercel ? 'file::memory:' : `file:${path.join(__dirname, '..', 'data', 'automail.db')}`);
 const authToken = process.env.TURSO_AUTH_TOKEN || undefined;
 
 // Ensure data directory exists for local fallback
-if (url.startsWith('file:')) {
+if (url.startsWith('file:') && url !== 'file::memory:') {
   const dataDir = path.join(__dirname, '..', 'data');
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
+  try {
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+  } catch (err) {
+    console.warn('⚠️ Could not create data directory (likely read-only environment like Vercel).');
+    console.warn('⚠️ You MUST set TURSO_DATABASE_URL in your Vercel Environment Variables!');
   }
 }
 
